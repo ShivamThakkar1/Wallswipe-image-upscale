@@ -24,7 +24,7 @@ WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # Full webhook URL
 # Level mapping
 LEVEL_MAP = {
     "basic": "1",
-    "premium": "2", 
+    "premium": "2",
     "elite": "3",
     "pro": "4"
 }
@@ -33,7 +33,7 @@ class ImageUpscalerBot:
     def __init__(self):
         self.app = Application.builder().token(BOT_TOKEN).build()
         self.setup_handlers()
-    
+
     def setup_handlers(self):
         """Setup bot handlers"""
         self.app.add_handler(CommandHandler("start", self.start))
@@ -41,7 +41,7 @@ class ImageUpscalerBot:
         self.app.add_handler(CallbackQueryHandler(self.button_callback))
         self.app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text))
-    
+
     async def check_channel_membership(self, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """Check if user is a member of the required channel"""
         try:
@@ -50,7 +50,7 @@ class ImageUpscalerBot:
         except Exception as e:
             logger.error(f"Error checking channel membership: {e}")
             return False
-    
+
     async def send_channel_join_message(self, update: Update):
         """Send message asking user to join channel"""
         channel_link = f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}"
@@ -65,7 +65,7 @@ class ImageUpscalerBot:
         )
         
         await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
-    
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         user_id = update.effective_user.id
@@ -86,7 +86,7 @@ class ImageUpscalerBot:
         )
         
         await update.message.reply_text(welcome_message, parse_mode='Markdown')
-    
+
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
         help_message = (
@@ -103,7 +103,7 @@ class ImageUpscalerBot:
         )
         
         await update.message.reply_text(help_message, parse_mode='Markdown')
-    
+
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle photo messages"""
         user_id = update.effective_user.id
@@ -129,7 +129,7 @@ class ImageUpscalerBot:
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
-    
+
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle button callbacks"""
         query = update.callback_query
@@ -195,7 +195,7 @@ class ImageUpscalerBot:
         
         # Clear stored photo
         context.user_data.pop('photo', None)
-    
+
     def detect_file_extension(self, url: str, content_type: str, image_data: bytes = None) -> str:
         """Detect file extension from URL, content type, or image data"""
         try:
@@ -249,7 +249,7 @@ class ImageUpscalerBot:
         except Exception as e:
             logger.error(f"Error detecting file extension: {e}")
             return 'jpg'
-    
+
     async def upscale_image(self, image_data: bytes, level: str) -> str:
         """Upscale image using the API"""
         try:
@@ -324,7 +324,7 @@ class ImageUpscalerBot:
         except Exception as e:
             logger.error(f"Error in upscale_image: {e}")
             return None
-    
+
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text messages"""
         user_id = update.effective_user.id
@@ -338,9 +338,9 @@ class ImageUpscalerBot:
             "I can enhance any image you send with different quality levels.",
             parse_mode='Markdown'
         )
-    
-    def run(self):
-        """Run the bot"""
+
+    async def run_app(self):
+        """Run the bot application"""
         logger.info("Starting Image Upscaler Bot...")
         
         # Get port from environment (for Render deployment)
@@ -353,27 +353,44 @@ class ImageUpscalerBot:
                 return
                 
             logger.info(f"Setting up webhook at {WEBHOOK_URL}")
-            self.app.run_webhook(
+            
+            # Initialize the application
+            await self.app.initialize()
+            
+            # Set webhook
+            await self.app.bot.set_webhook(url=WEBHOOK_URL + "/" + BOT_TOKEN)
+            
+            # Start the application
+            await self.app.start()
+            
+            # Keep the application running
+            await self.app.updater.start_webhook(
                 listen="0.0.0.0",
                 port=port,
                 url_path=BOT_TOKEN,
-                webhook_url=WEBHOOK_URL
+                webhook_url=WEBHOOK_URL + "/" + BOT_TOKEN
             )
+            
+            # Run until stopped
+            await self.app.updater.idle()
         else:
             # Running locally - use polling
             logger.info("Running in polling mode (local development)")
-            self.app.run_polling(allowed_updates=Update.ALL_TYPES)
+            await self.app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 def main():
     """Main function"""
     if not BOT_TOKEN:
         logger.error("❌ BOT_TOKEN environment variable not set!")
         return
-    
+
     logger.info(f"Bot configured with channel: {CHANNEL_USERNAME} (ID: {CHANNEL_ID})")
-    
+
     bot = ImageUpscalerBot()
-    bot.run()
+    
+    # Run the bot
+    import asyncio
+    asyncio.run(bot.run_app())
 
 # Auto-start for Render deployment
 if __name__ == "__main__":
