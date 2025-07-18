@@ -18,10 +18,10 @@ logger = logging.getLogger(**name**)
 
 # Bot configuration from environment variables
 
-BOT_TOKEN = os.getenv(‘BOT_TOKEN’)
-CHANNEL_USERNAME = os.getenv(‘CHANNEL_USERNAME’, ‘@WallSwipe’)
-CHANNEL_ID = os.getenv(‘CHANNEL_ID’, ‘@WallSwipe’)  # Can be channel ID like -1001234567890
-WEBHOOK_URL = os.getenv(‘WEBHOOK_URL’)  # Full webhook URL
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@WallSwipe')
+CHANNEL_ID = os.getenv('CHANNEL_ID', '@WallSwipe')  # Can be channel ID like -1001234567890
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # Full webhook URL
 
 # Level mapping
 
