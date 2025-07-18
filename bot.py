@@ -7,6 +7,7 @@ from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import mimetypes
+import asyncio
 
 # Configure logging
 logging.basicConfig(
@@ -31,6 +32,9 @@ LEVEL_MAP = {
 
 class ImageUpscalerBot:
     def __init__(self):
+        if not BOT_TOKEN:
+            raise ValueError('BOT_TOKEN environment variable not set!')
+        
         self.app = Application.builder().token(BOT_TOKEN).build()
         self.setup_handlers()
 
@@ -353,16 +357,25 @@ class ImageUpscalerBot:
                 return
                 
             logger.info(f'Setting up webhook at {WEBHOOK_URL}')
-            self.app.run_webhook(
-                listen='0.0.0.0',
-                port=port,
-                url_path=BOT_TOKEN,
-                webhook_url=WEBHOOK_URL
-            )
+            
+            # For Render, we need to use async context
+            try:
+                self.app.run_webhook(
+                    listen='0.0.0.0',
+                    port=port,
+                    url_path=BOT_TOKEN,
+                    webhook_url=WEBHOOK_URL,
+                    drop_pending_updates=True
+                )
+            except Exception as e:
+                logger.error(f'Webhook setup failed: {e}')
+                # Fallback to polling if webhook fails
+                logger.info('Falling back to polling mode...')
+                self.app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
         else:
             # Running locally - use polling
             logger.info('Running in polling mode (local development)')
-            self.app.run_polling(allowed_updates=Update.ALL_TYPES)
+            self.app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 def main():
     '''Main function'''
