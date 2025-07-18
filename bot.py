@@ -385,4 +385,4 @@ bot.run()
 # Auto-start for Render deployment
 
 if **name** == “**main**”:
-main()
+main() 
