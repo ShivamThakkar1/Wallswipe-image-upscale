@@ -385,13 +385,12 @@ bot.onText(/\/start/, async (msg) => {
     
     // Show privacy policy only for first-time users
     if (!global.privacyShown.has(userId)) {
-        const privacyMessage = `📄 **Privacy Policy:**
-When you use this bot, your images are sent to third-party AI services (e.g., image upscaling APIs) to process and return enhanced results.
-These third-party services **may temporarily store or analyze** the image data as part of their operation. We do not control how third-party APIs handle data, and by using this bot, you consent to their data handling practices.
-We do **not collect or store** your personal information (e.g., names, usernames, chats). Images are not saved on our servers and are processed only to deliver the result.
-By using this bot, you agree to this data processing and you accept the Telegram Bot Standard Privacy Policy:
-🔗 https://telegram.org/privacy-tpa
-📌 Powered by @WallSwipe
+        const privacyMessage = `👋 Welcome to Free Image Upscaler – by WallSwipe!
+Send any image to upscale it for free using powerful AI.
+
+🔐 By using this bot, you agree to our privacy policy. Use /privacy to read it.
+
+📢 Powered by @WallSwipe
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━`;
         
@@ -459,13 +458,19 @@ bot.onText(/\/privacy/, async (msg) => {
     await getOrCreateUser(msg.from);
     await updateDailyStats('commands.privacy');
     
-    const privacyMessage = `📄 **Privacy Policy:**
-When you use this bot, your images are sent to third-party AI services (e.g., image upscaling APIs) to process and return enhanced results.
-These third-party services **may temporarily store or analyze** the image data as part of their operation. We do not control how third-party APIs handle data, and by using this bot, you consent to their data handling practices.
-We do **not collect or store** your personal information (e.g., names, usernames, chats). Images are not saved on our servers and are processed only to deliver the result.
-By using this bot, you agree to this data processing and you accept the Telegram Bot Standard Privacy Policy:
-🔗 https://telegram.org/privacy-tpa
-📌 Powered by @WallSwipe`;
+    const privacyMessage = `📄 Privacy Policy
+
+When you use this bot, your images are sent to trusted third-party AI services (e.g., image upscaling APIs) for processing. These services may temporarily store or analyze image data as part of their operation. We do not control how third-party providers handle data — by using this bot, you consent to their data practices.
+
+🧾 We collect limited personal information such as your name, username, and chat ID for analytics and marketing purposes, to help improve the service and understand user engagement.
+
+🖼️ We do not store your images. They are used only during processing and are not saved on our servers.
+
+✅ By using this bot, you agree to this data handling and accept the [Telegram Bot Privacy Policy](https://telegram.org/privacy-tpa).
+
+🔄 WallSwipe reserves the right to update this policy at any time without prior notice.
+
+📢 Powered by @WallSwipe`;
     
     bot.sendMessage(chatId, privacyMessage, { parse_mode: 'Markdown' });
 });
