@@ -1,28 +1,35 @@
 {
-  "name": "wallswipe-upscaler-bot",
+  "name": "wallswipe-image-upscaler-bot",
   "version": "1.0.0",
-  "description": "Telegram bot for upscaling images using WallSwipe",
+  "description": "Telegram bot for image upscaling with comprehensive stats tracking",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "node index.js"
+    "dev": "nodemon index.js"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0",
     "axios": "^1.6.0",
     "form-data": "^4.0.0",
     "express": "^4.18.2",
+    "mongoose": "^8.0.3",
     "node-cron": "^3.0.3"
   },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=16.0.0"
   },
   "keywords": [
     "telegram",
     "bot",
     "image",
     "upscaler",
-    "wallswipe"
+    "ai",
+    "wallswipe",
+    "mongodb",
+    "stats"
   ],
   "author": "WallSwipe",
   "license": "MIT"
