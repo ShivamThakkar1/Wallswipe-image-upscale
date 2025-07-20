@@ -3,17 +3,22 @@ const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
+const cron = require('node-cron');
 
 // Environment variables
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_USERNAME = '@WallSwipe';
 const PORT = process.env.PORT || 3000;
-const ADMIN_ID = process.env.ADMIN_ID;
+const ADMIN_USER_ID = process.env.ADMIN_USER_ID;
 
 // NocoDB configuration
-const NOCODB_BASE_URL = process.env.NOCODB_BASE_URL;
-const NOCODB_API_TOKEN = process.env.NOCODB_API_TOKEN;
-const NOCODB_TABLE_ID = process.env.NOCODB_TABLE_ID;
+const NOCODB_CONFIG = {
+    API_TOKEN: process.env.NOCODB_API_TOKEN,
+    BASE_ID: process.env.NOCODB_BASE_ID,
+    BASE_URL: process.env.NOCODB_BASE_URL,
+    TABLE_ID: process.env.NOCODB_TABLE_ID,
+    WORKSPACE_ID: process.env.NOCODB_WORKSPACE_ID
+};
 
 // Create bot instance
 const bot = new TelegramBot(BOT_TOKEN, { 
@@ -56,229 +61,282 @@ const levelMap = {
 // Track if user has seen privacy policy
 if (!global.privacyShown) global.privacyShown = new Set();
 
-// NocoDB API functions
-async function saveUserStats(userId, username, action, quality = null) {
-    if (!NOCODB_BASE_URL || !NOCODB_API_TOKEN || !NOCODB_TABLE_ID) {
-        console.log('NocoDB not configured, skipping stats');
-        return;
-    }
-    
-    try {
-        const data = {
-            user_id: userId.toString(),
-            username: username || 'Unknown',
-            action: action, // 'start', 'upscale', 'quality_change'
-            quality: quality,
-            timestamp: new Date().toISOString(),
-            date: new Date().toISOString().split('T')[0] // YYYY-MM-DD format
-        };
-        
-        await axios.post(
-            `${NOCODB_BASE_URL}/api/v1/db/data/v1/${NOCODB_TABLE_ID}`,
-            data,
-            {
-                headers: {
-                    'xc-token': NOCODB_API_TOKEN,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-        
-        console.log(`📊 Stats saved: ${username} - ${action} - ${quality || 'N/A'}`);
-    } catch (error) {
-        console.error('Error saving stats:', error.response?.data || error.message);
-    }
-}
-
-async function getStats(period = 'daily') {
-    if (!NOCODB_BASE_URL || !NOCODB_API_TOKEN || !NOCODB_TABLE_ID) {
-        return null;
-    }
-    
-    try {
-        const today = new Date().toISOString().split('T')[0];
-        const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-        const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
-        
-        let whereClause = '';
-        if (period === 'daily') {
-            whereClause = `(date,eq,${yesterday})`;
-        } else if (period === 'monthly') {
-            whereClause = `(date,gte,${monthStart})`;
-        }
-        
-        const response = await axios.get(
-            `${NOCODB_BASE_URL}/api/v1/db/data/v1/${NOCODB_TABLE_ID}?where=${whereClause}&limit=1000`,
-            {
-                headers: {
-                    'xc-token': NOCODB_API_TOKEN
-                }
-            }
-        );
-        
-        return response.data.list || [];
-    } catch (error) {
-        console.error('Error fetching stats:', error.response?.data || error.message);
-        return null;
-    }
-}
-
-function analyzeStats(data) {
-    if (!data || data.length === 0) return null;
-    
-    const totalActions = data.length;
-    const uniqueUsers = new Set(data.map(item => item.user_id)).size;
-    
-    // Count by action type
-    const actionCounts = data.reduce((acc, item) => {
-        acc[item.action] = (acc[item.action] || 0) + 1;
-        return acc;
-    }, {});
-    
-    // Count by quality
-    const qualityCounts = data
-        .filter(item => item.quality)
-        .reduce((acc, item) => {
-            acc[item.quality] = (acc[item.quality] || 0) + 1;
-            return acc;
-        }, {});
-    
-    // Top users
-    const userCounts = data.reduce((acc, item) => {
-        const key = `${item.username || 'Unknown'} (${item.user_id})`;
-        acc[key] = (acc[key] || 0) + 1;
-        return acc;
-    }, {});
-    
-    const topUsers = Object.entries(userCounts)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5);
-    
-    return {
-        totalActions,
-        uniqueUsers,
-        actionCounts,
-        qualityCounts,
-        topUsers
+// In-memory stats (for immediate tracking)
+if (!global.dailyStats) {
+    global.dailyStats = {
+        totalUsers: new Set(),
+        newUsers: new Set(),
+        imagesProcessed: 0,
+        qualityUsage: { basic: 0, premium: 0, elite: 0, pro: 0 },
+        date: new Date().toDateString()
     };
 }
 
-async function sendStatsToAdmin(period = 'daily') {
-    if (!ADMIN_ID) {
-        console.log('Admin ID not configured');
+// NocoDB API helper functions
+async function makeNocoRequest(method, endpoint, data = null) {
+    const url = `${NOCODB_CONFIG.BASE_URL}/api/v2/tables/${NOCODB_CONFIG.TABLE_ID}/records${endpoint}`;
+    
+    const config = {
+        method,
+        url,
+        headers: {
+            'xc-token': NOCODB_CONFIG.API_TOKEN,
+            'Content-Type': 'application/json'
+        }
+    };
+    
+    if (data) {
+        config.data = data;
+    }
+    
+    try {
+        const response = await axios(config);
+        return response.data;
+    } catch (error) {
+        console.error('NocoDB request error:', error.response?.data || error.message);
+        throw error;
+    }
+}
+
+// Save or update user in NocoDB
+async function saveUserToNoco(userId, username, firstName, lastName, isNew = false) {
+    try {
+        // Check if user exists
+        const existingUser = await makeNocoRequest('GET', `?where=(user_id,eq,${userId})`);
+        
+        const userData = {
+            user_id: userId,
+            username: username || null,
+            first_name: firstName || null,
+            last_name: lastName || null,
+            last_active: new Date().toISOString(),
+            total_images_processed: isNew ? 0 : undefined
+        };
+        
+        if (existingUser.list && existingUser.list.length > 0) {
+            // Update existing user
+            const recordId = existingUser.list[0].Id;
+            await makeNocoRequest('PATCH', `/${recordId}`, userData);
+        } else {
+            // Create new user
+            userData.join_date = new Date().toISOString();
+            userData.total_images_processed = 0;
+            await makeNocoRequest('POST', '', userData);
+        }
+    } catch (error) {
+        console.error('Error saving user to NocoDB:', error);
+    }
+}
+
+// Update user image count in NocoDB
+async function updateUserImageCount(userId, quality) {
+    try {
+        const existingUser = await makeNocoRequest('GET', `?where=(user_id,eq,${userId})`);
+        
+        if (existingUser.list && existingUser.list.length > 0) {
+            const record = existingUser.list[0];
+            const recordId = record.Id;
+            const currentCount = record.total_images_processed || 0;
+            
+            const updateData = {
+                total_images_processed: currentCount + 1,
+                last_active: new Date().toISOString(),
+                last_quality_used: quality
+            };
+            
+            await makeNocoRequest('PATCH', `/${recordId}`, updateData);
+        }
+    } catch (error) {
+        console.error('Error updating user image count:', error);
+    }
+}
+
+// Get stats from NocoDB
+async function getStatsFromNoco(days = 1) {
+    try {
+        const dateFrom = new Date();
+        dateFrom.setDate(dateFrom.getDate() - days);
+        const dateFromISO = dateFrom.toISOString();
+        
+        // Get users who joined in the specified period
+        const newUsers = await makeNocoRequest('GET', `?where=(join_date,gte,${dateFromISO})`);
+        
+        // Get users who were active in the specified period
+        const activeUsers = await makeNocoRequest('GET', `?where=(last_active,gte,${dateFromISO})`);
+        
+        // Get total users
+        const totalUsers = await makeNocoRequest('GET', '?limit=1&offset=0');
+        
+        return {
+            newUsersCount: newUsers.list?.length || 0,
+            activeUsersCount: activeUsers.list?.length || 0,
+            totalUsersCount: totalUsers.pageInfo?.totalRows || 0,
+            newUsers: newUsers.list || [],
+            activeUsers: activeUsers.list || []
+        };
+    } catch (error) {
+        console.error('Error getting stats from NocoDB:', error);
+        return { newUsersCount: 0, activeUsersCount: 0, totalUsersCount: 0, newUsers: [], activeUsers: [] };
+    }
+}
+
+// Reset daily stats
+function resetDailyStats() {
+    const today = new Date().toDateString();
+    if (global.dailyStats.date !== today) {
+        global.dailyStats = {
+            totalUsers: new Set(),
+            newUsers: new Set(),
+            imagesProcessed: 0,
+            qualityUsage: { basic: 0, premium: 0, elite: 0, pro: 0 },
+            date: today
+        };
+    }
+}
+
+// Send daily stats to admin
+async function sendDailyStatsToAdmin() {
+    if (!ADMIN_USER_ID) {
+        console.log('No admin user ID configured');
         return;
     }
     
     try {
-        const data = await getStats(period);
-        const stats = analyzeStats(data);
+        resetDailyStats();
         
-        if (!stats) {
-            bot.sendMessage(ADMIN_ID, `📊 ${period.toUpperCase()} STATS\n\n❌ No data available or error occurred`);
-            return;
+        // Get stats from NocoDB
+        const dbStats = await getStatsFromNoco(1); // Last 24 hours
+        const weeklyStats = await getStatsFromNoco(7); // Last 7 days
+        const monthlyStats = await getStatsFromNoco(30); // Last 30 days
+        
+        // Combine with in-memory stats
+        const statsMessage = `📊 **Daily Bot Statistics**
+📅 Date: ${new Date().toLocaleDateString()}
+
+**📈 User Statistics:**
+👥 Total Users: ${dbStats.totalUsersCount}
+🆕 New Users (24h): ${dbStats.newUsersCount}
+🔥 Active Users (24h): ${dbStats.activeUsersCount}
+📊 Active Users (7d): ${weeklyStats.activeUsersCount}
+📈 Active Users (30d): ${monthlyStats.activeUsersCount}
+
+**🖼️ Image Processing:**
+📸 Images Processed Today: ${global.dailyStats.imagesProcessed}
+🔧 Basic Quality: ${global.dailyStats.qualityUsage.basic}
+⭐ Premium Quality: ${global.dailyStats.qualityUsage.premium}
+💎 Elite Quality: ${global.dailyStats.qualityUsage.elite}
+🚀 Pro Quality: ${global.dailyStats.qualityUsage.pro}
+
+**📱 Channel Growth:**
+📢 Channel: ${CHANNEL_USERNAME}
+
+**⏰ Report Generated:** ${new Date().toLocaleString()}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+        
+        await bot.sendMessage(ADMIN_USER_ID, statsMessage, { parse_mode: 'Markdown' });
+        
+        // Send detailed user list if there are new users
+        if (dbStats.newUsers.length > 0) {
+            let usersList = `📋 **New Users Details:**\n\n`;
+            dbStats.newUsers.forEach((user, index) => {
+                usersList += `${index + 1}. ${user.first_name || 'N/A'} ${user.last_name || ''}\n`;
+                usersList += `   👤 @${user.username || 'No username'}\n`;
+                usersList += `   🆔 ID: ${user.user_id}\n`;
+                usersList += `   📅 Joined: ${new Date(user.join_date).toLocaleString()}\n\n`;
+            });
+            
+            if (usersList.length < 4000) { // Telegram message limit
+                await bot.sendMessage(ADMIN_USER_ID, usersList, { parse_mode: 'Markdown' });
+            } else {
+                // Split message if too long
+                const chunks = usersList.match(/.{1,3900}/gs);
+                for (const chunk of chunks) {
+                    await bot.sendMessage(ADMIN_USER_ID, chunk, { parse_mode: 'Markdown' });
+                    await new Promise(resolve => setTimeout(resolve, 1000)); // Avoid rate limits
+                }
+            }
         }
         
-        const periodText = period === 'daily' ? 'Yesterday' : 'This Month';
-        const dateInfo = period === 'daily' 
-            ? new Date(Date.now() - 24 * 60 * 60 * 1000).toDateString()
-            : `${new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`;
+        console.log('Daily stats sent to admin successfully');
+    } catch (error) {
+        console.error('Error sending daily stats to admin:', error);
+        // Send error notification to admin
+        try {
+            await bot.sendMessage(ADMIN_USER_ID, `❌ Error generating daily stats: ${error.message}`);
+        } catch (e) {
+            console.error('Failed to send error notification:', e);
+        }
+    }
+}
+
+// Schedule daily stats (every day at 9:00 AM)
+cron.schedule('0 9 * * *', sendDailyStatsToAdmin, {
+    timezone: "UTC"
+});
+
+// Admin command to get instant stats
+bot.onText(/\/stats/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    // Check if user is admin
+    if (userId.toString() !== ADMIN_USER_ID) {
+        bot.sendMessage(chatId, '❌ Access denied. This command is for admins only.');
+        return;
+    }
+    
+    try {
+        const statusMsg = await bot.sendMessage(chatId, '📊 Generating stats...');
         
-        let message = `📊 **${periodText.toUpperCase()} STATS**\n`;
-        message += `📅 **Date:** ${dateInfo}\n\n`;
-        message += `👥 **Unique Users:** ${stats.uniqueUsers}\n`;
-        message += `⚡ **Total Actions:** ${stats.totalActions}\n\n`;
+        resetDailyStats();
+        const dbStats = await getStatsFromNoco(1);
+        const weeklyStats = await getStatsFromNoco(7);
+        const monthlyStats = await getStatsFromNoco(30);
         
-        // Action breakdown
-        message += `🔍 **Actions Breakdown:**\n`;
-        Object.entries(stats.actionCounts).forEach(([action, count]) => {
-            const emoji = action === 'upscale' ? '🖼️' : action === 'start' ? '🚀' : '⚙️';
-            message += `${emoji} ${action}: ${count}\n`;
+        const statsMessage = `📊 **Bot Statistics**
+📅 Generated: ${new Date().toLocaleString()}
+
+**👥 User Statistics:**
+📈 Total Users: ${dbStats.totalUsersCount}
+🆕 New (24h): ${dbStats.newUsersCount}
+🔥 Active (24h): ${dbStats.activeUsersCount}
+📊 Active (7d): ${weeklyStats.activeUsersCount}
+📈 Active (30d): ${monthlyStats.activeUsersCount}
+
+**🖼️ Today's Activity:**
+📸 Images Processed: ${global.dailyStats.imagesProcessed}
+🔧 Basic: ${global.dailyStats.qualityUsage.basic}
+⭐ Premium: ${global.dailyStats.qualityUsage.premium}
+💎 Elite: ${global.dailyStats.qualityUsage.elite}
+🚀 Pro: ${global.dailyStats.qualityUsage.pro}
+
+Use /fullstats for detailed user information.`;
+        
+        await bot.editMessageText(statsMessage, {
+            chat_id: chatId,
+            message_id: statusMsg.message_id,
+            parse_mode: 'Markdown'
         });
         
-        // Quality usage
-        if (Object.keys(stats.qualityCounts).length > 0) {
-            message += `\n🎯 **Quality Usage:**\n`;
-            Object.entries(stats.qualityCounts).forEach(([quality, count]) => {
-                const emoji = quality === 'pro' ? '🚀' : quality === 'elite' ? '💎' : 
-                             quality === 'premium' ? '⭐' : '🔧';
-                message += `${emoji} ${quality}: ${count}\n`;
-            });
-        }
-        
-        // Top users
-        if (stats.topUsers.length > 0) {
-            message += `\n🏆 **Top Users:**\n`;
-            stats.topUsers.forEach(([user, count], index) => {
-                const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : '👤';
-                message += `${medal} ${user}: ${count} actions\n`;
-            });
-        }
-        
-        message += `\n📌 Powered by @WallSwipe`;
-        
-        bot.sendMessage(ADMIN_ID, message, { parse_mode: 'Markdown' });
-        console.log(`📊 ${period} stats sent to admin`);
-        
     } catch (error) {
-        console.error('Error sending stats to admin:', error);
-        bot.sendMessage(ADMIN_ID, `📊 ${period.toUpperCase()} STATS\n\n❌ Error generating stats: ${error.message}`);
+        console.error('Error generating stats:', error);
+        bot.sendMessage(chatId, `❌ Error generating stats: ${error.message}`);
     }
-}
+});
 
-// Schedule daily stats (every day at 9 AM)
-function scheduleDailyStats() {
-    const now = new Date();
-    const target = new Date();
-    target.setHours(9, 0, 0, 0); // 9 AM
+// Admin command to get full stats with user details
+bot.onText(/\/fullstats/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
     
-    // If 9 AM has passed today, schedule for tomorrow
-    if (now > target) {
-        target.setDate(target.getDate() + 1);
-    }
-    
-    const msUntilTarget = target.getTime() - now.getTime();
-    
-    setTimeout(() => {
-        sendStatsToAdmin('daily');
-        // Set interval for every 24 hours
-        setInterval(() => {
-            sendStatsToAdmin('daily');
-        }, 24 * 60 * 60 * 1000);
-    }, msUntilTarget);
-    
-    console.log(`📅 Daily stats scheduled for ${target.toString()}`);
-}
-
-// Schedule monthly stats (1st of every month at 10 AM)
-function scheduleMonthlyStats() {
-    const now = new Date();
-    const target = new Date();
-    target.setDate(1); // 1st of the month
-    target.setHours(10, 0, 0, 0); // 10 AM
-    
-    // If this month's 1st has passed, schedule for next month
-    if (now > target) {
-        target.setMonth(target.getMonth() + 1);
+    if (userId.toString() !== ADMIN_USER_ID) {
+        bot.sendMessage(chatId, '❌ Access denied. This command is for admins only.');
+        return;
     }
     
-    const msUntilTarget = target.getTime() - now.getTime();
-    
-    setTimeout(() => {
-        sendStatsToAdmin('monthly');
-        // Set interval for every month (approximately)
-        setInterval(() => {
-            sendStatsToAdmin('monthly');
-        }, 30 * 24 * 60 * 60 * 1000);
-    }, msUntilTarget);
-    
-    console.log(`📅 Monthly stats scheduled for ${target.toString()}`);
-}
-
-// Initialize schedulers
-if (ADMIN_ID) {
-    scheduleDailyStats();
-    scheduleMonthlyStats();
-}
+    await sendDailyStatsToAdmin();
+    bot.sendMessage(chatId, '✅ Full stats sent!');
+});
 
 // Check if user is in channel
 async function checkChannelMembership(userId) {
@@ -308,17 +366,41 @@ function sendChannelJoinMessage(chatId) {
     );
 }
 
+// Track user interaction
+async function trackUser(user, isNewUser = false) {
+    resetDailyStats();
+    
+    const userId = user.id;
+    global.dailyStats.totalUsers.add(userId);
+    
+    if (isNewUser) {
+        global.dailyStats.newUsers.add(userId);
+    }
+    
+    // Save to NocoDB
+    await saveUserToNoco(
+        userId,
+        user.username,
+        user.first_name,
+        user.last_name,
+        isNewUser
+    );
+}
+
 // Start command
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
-    const username = msg.from.username;
+    const user = msg.from;
     
-    // Save stats
-    await saveUserStats(userId, username, 'start');
+    // Check if this is a new user
+    const isNewUser = !global.privacyShown.has(userId);
+    
+    // Track user
+    await trackUser(user, isNewUser);
     
     // Show privacy policy only for first-time users
-    if (!global.privacyShown.has(userId)) {
+    if (isNewUser) {
         const privacyMessage = `📄 **Privacy Policy:**
 When you use this bot, your images are sent to third-party AI services (e.g., image upscaling APIs) to process and return enhanced results.
 These third-party services **may temporarily store or analyze** the image data as part of their operation. We do not control how third-party APIs handle data, and by using this bot, you consent to their data handling practices.
@@ -360,10 +442,10 @@ By using this bot, you agree to this data processing and you accept the Telegram
 bot.onText(/\/quality/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
-    const username = msg.from.username;
+    const user = msg.from;
     
-    // Save stats
-    await saveUserStats(userId, username, 'quality_change');
+    // Track user
+    await trackUser(user);
     
     const isMember = await checkChannelMembership(userId);
     
@@ -388,8 +470,12 @@ bot.onText(/\/quality/, async (msg) => {
 });
 
 // Privacy command
-bot.onText(/\/privacy/, (msg) => {
+bot.onText(/\/privacy/, async (msg) => {
     const chatId = msg.chat.id;
+    const user = msg.from;
+    
+    // Track user
+    await trackUser(user);
     
     const privacyMessage = `📄 **Privacy Policy:**
 When you use this bot, your images are sent to third-party AI services (e.g., image upscaling APIs) to process and return enhanced results.
@@ -403,8 +489,12 @@ By using this bot, you agree to this data processing and you accept the Telegram
 });
 
 // Help command
-bot.onText(/\/help/, (msg) => {
+bot.onText(/\/help/, async (msg) => {
     const chatId = msg.chat.id;
+    const user = msg.from;
+    
+    // Track user
+    await trackUser(user);
     
     const helpMessage = `🤖 **WallSwipe Image Upscaler Bot Help**
 
@@ -440,49 +530,15 @@ bot.onText(/\/help/, (msg) => {
     bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
-// Admin commands (only for admin)
-bot.onText(/\/stats/, async (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    
-    if (ADMIN_ID && userId.toString() === ADMIN_ID) {
-        const keyboard = {
-            inline_keyboard: [
-                [{ text: '📊 Daily Stats', callback_data: 'admin_daily' }],
-                [{ text: '📈 Monthly Stats', callback_data: 'admin_monthly' }]
-            ]
-        };
-        
-        bot.sendMessage(chatId, 
-            `📊 **Admin Statistics Panel**\n\nChoose report type:`, 
-            { reply_markup: keyboard, parse_mode: 'Markdown' }
-        );
-    } else {
-        bot.sendMessage(chatId, '❌ Access denied. Admin only command.');
-    }
-});
-
-// Handle admin callback queries
+// Handle callback queries
 bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id;
     const userId = callbackQuery.from.id;
+    const user = callbackQuery.from;
     const data = callbackQuery.data;
     
-    if (data === 'admin_daily' || data === 'admin_monthly') {
-        if (ADMIN_ID && userId.toString() === ADMIN_ID) {
-            const period = data.replace('admin_', '');
-            bot.editMessageText(
-                `📊 Generating ${period} stats report...`,
-                {
-                    chat_id: chatId,
-                    message_id: callbackQuery.message.message_id
-                }
-            );
-            await sendStatsToAdmin(period);
-        }
-        bot.answerCallbackQuery(callbackQuery.id);
-        return;
-    }
+    // Track user
+    await trackUser(user);
     
     if (data === 'check_membership') {
         const isMember = await checkChannelMembership(userId);
@@ -535,7 +591,10 @@ bot.on('callback_query', async (callbackQuery) => {
 bot.on('photo', async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
-    const username = msg.from.username;
+    const user = msg.from;
+    
+    // Track user
+    await trackUser(user);
     
     // Check channel membership
     const isMember = await checkChannelMembership(userId);
@@ -566,11 +625,16 @@ bot.on('photo', async (msg) => {
     const selectedLevel = global.userChoices[userId];
     const scaleValue = levelMap[selectedLevel];
     
-    // Save stats for upscale action
-    await saveUserStats(userId, username, 'upscale', selectedLevel);
-    
     try {
         const statusMsg = await bot.sendMessage(chatId, '📤 Uploading image...');
+        
+        // Update stats
+        resetDailyStats();
+        global.dailyStats.imagesProcessed++;
+        global.dailyStats.qualityUsage[selectedLevel]++;
+        
+        // Update user stats in NocoDB
+        await updateUserImageCount(userId, selectedLevel);
         
         // Get the highest resolution photo
         const photo = msg.photo[msg.photo.length - 1];
@@ -701,6 +765,10 @@ bot.on('photo', async (msg) => {
 // Handle documents (images sent as files)
 bot.on('document', async (msg) => {
     const chatId = msg.chat.id;
+    const user = msg.from;
+    
+    // Track user
+    await trackUser(user);
     
     if (msg.document.mime_type && msg.document.mime_type.startsWith('image/')) {
         // Convert document to photo-like object and process
@@ -722,6 +790,18 @@ bot.on('document', async (msg) => {
     }
 });
 
+// Handle any text message (for additional tracking)
+bot.on('message', async (msg) => {
+    // Skip if it's a command or photo (already handled)
+    if (msg.text && msg.text.startsWith('/')) return;
+    if (msg.photo || msg.document) return;
+    
+    const user = msg.from;
+    
+    // Track user interaction
+    await trackUser(user);
+});
+
 // Handle errors
 bot.on('polling_error', (error) => {
     console.error('Polling error:', error);
@@ -731,4 +811,39 @@ bot.on('webhook_error', (error) => {
     console.error('Webhook error:', error);
 });
 
-console.log('🤖 WallSwipe Image Upscaler Bot started!');
+// Initialize bot
+async function initializeBot() {
+    console.log('🤖 WallSwipe Image Upscaler Bot started!');
+    
+    // Send startup notification to admin
+    if (ADMIN_USER_ID) {
+        try {
+            await bot.sendMessage(ADMIN_USER_ID, 
+                `🚀 **Bot Started Successfully!**\n\n` +
+                `📅 Time: ${new Date().toLocaleString()}\n` +
+                `🔧 Environment: ${process.env.NODE_ENV || 'development'}\n` +
+                `💾 NocoDB: ${NOCODB_CONFIG.BASE_URL ? '✅ Connected' : '❌ Not configured'}\n` +
+                `📊 Stats tracking: ✅ Enabled\n` +
+                `⏰ Daily reports: ✅ Scheduled for 9:00 AM UTC\n\n` +
+                `Use /stats for instant statistics or /fullstats for detailed report.`,
+                { parse_mode: 'Markdown' }
+            );
+        } catch (error) {
+            console.error('Failed to send startup notification:', error);
+        }
+    }
+    
+    // Send initial stats if in production
+    if (process.env.NODE_ENV === 'production' && ADMIN_USER_ID) {
+        setTimeout(async () => {
+            try {
+                await sendDailyStatsToAdmin();
+            } catch (error) {
+                console.error('Failed to send initial stats:', error);
+            }
+        }, 5000); // Wait 5 seconds after startup
+    }
+}
+
+// Start the bot
+initializeBot();
