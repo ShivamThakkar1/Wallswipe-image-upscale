@@ -47,6 +47,9 @@ const levelMap = {
     'pro': '4'
 };
 
+// Track if user has seen privacy policy
+if (!global.privacyShown) global.privacyShown = new Set();
+
 // Check if user is in channel
 async function checkChannelMembership(userId) {
     try {
@@ -80,6 +83,22 @@ bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
     
+    // Show privacy policy only for first-time users
+    if (!global.privacyShown.has(userId)) {
+        const privacyMessage = `📄 **Privacy Policy:**
+When you use this bot, your images are sent to third-party AI services (e.g., image upscaling APIs) to process and return enhanced results.
+These third-party services **may temporarily store or analyze** the image data as part of their operation. We do not control how third-party APIs handle data, and by using this bot, you consent to their data handling practices.
+We do **not collect or store** your personal information (e.g., names, usernames, chats). Images are not saved on our servers and are processed only to deliver the result.
+By using this bot, you agree to this data processing and you accept the Telegram Bot Standard Privacy Policy:
+🔗 https://telegram.org/privacy-tpa
+📌 Powered by @WallSwipe
+
+━━━━━━━━━━━━━━━━━━━━━━━━━`;
+        
+        await bot.sendMessage(chatId, privacyMessage, { parse_mode: 'Markdown' });
+        global.privacyShown.add(userId);
+    }
+    
     const isMember = await checkChannelMembership(userId);
     
     if (!isMember) {
@@ -101,6 +120,86 @@ bot.onText(/\/start/, async (msg) => {
         `Choose your upscale quality and send me an image:`, 
         { reply_markup: keyboard }
     );
+});
+
+// Quality selection command (separate from start)
+bot.onText(/\/quality/, async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    
+    const isMember = await checkChannelMembership(userId);
+    
+    if (!isMember) {
+        sendChannelJoinMessage(chatId);
+        return;
+    }
+    
+    const keyboard = {
+        inline_keyboard: [
+            [{ text: '🔧 Basic', callback_data: 'scale_basic' }],
+            [{ text: '⭐ Premium', callback_data: 'scale_premium' }],
+            [{ text: '💎 Elite', callback_data: 'scale_elite' }],
+            [{ text: '🚀 Pro', callback_data: 'scale_pro' }]
+        ]
+    };
+    
+    bot.sendMessage(chatId, 
+        `🖼️ Choose your upscale quality:`, 
+        { reply_markup: keyboard }
+    );
+});
+
+// Privacy command
+bot.onText(/\/privacy/, (msg) => {
+    const chatId = msg.chat.id;
+    
+    const privacyMessage = `📄 **Privacy Policy:**
+When you use this bot, your images are sent to third-party AI services (e.g., image upscaling APIs) to process and return enhanced results.
+These third-party services **may temporarily store or analyze** the image data as part of their operation. We do not control how third-party APIs handle data, and by using this bot, you consent to their data handling practices.
+We do **not collect or store** your personal information (e.g., names, usernames, chats). Images are not saved on our servers and are processed only to deliver the result.
+By using this bot, you agree to this data processing and you accept the Telegram Bot Standard Privacy Policy:
+🔗 https://telegram.org/privacy-tpa
+📌 Powered by @WallSwipe`;
+    
+    bot.sendMessage(chatId, privacyMessage, { parse_mode: 'Markdown' });
+});
+
+// Help command
+bot.onText(/\/help/, (msg) => {
+    const chatId = msg.chat.id;
+    
+    const helpMessage = `🤖 **WallSwipe Image Upscaler Bot Help**
+
+**How to use:**
+1️⃣ Use /start to begin
+2️⃣ Join our channel @WallSwipe (required for free use)
+3️⃣ Select upscale quality (Basic, Premium, Elite, Pro)
+4️⃣ Send any image to upscale
+5️⃣ Receive your enhanced image!
+
+**Available Commands:**
+• /start - Start the bot and show quality options
+• /quality - Change upscale quality anytime
+• /help - Show this help message
+• /privacy - View privacy policy
+
+**Upscale Qualities:**
+🔧 **Basic** - Standard quality enhancement
+⭐ **Premium** - Better quality with more details
+💎 **Elite** - High-quality enhancement
+🚀 **Pro** - Maximum quality upscaling
+
+**Supported Formats:**
+✅ JPG, JPEG, PNG images
+✅ Send as photo or document
+✅ Any image size
+
+**Requirements:**
+📢 Must join @WallSwipe channel to use for free
+
+📌 Powered by @WallSwipe`;
+    
+    bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
 });
 
 // Handle callback queries
@@ -301,7 +400,7 @@ bot.on('photo', async (msg) => {
         
         // Send the upscaled image
         await bot.sendDocument(chatId, outputPath, {
-            caption: `✅ Upscaled with ${selectedLevel.toUpperCase()} quality!\n\n🔄 Send another image or /start to change quality.`
+            caption: `✅ Upscaled with ${selectedLevel.toUpperCase()} quality!\n\n🔄 Send another image or use /quality to change quality.`
         }, {
             filename: `WallSwipe_${selectedLevel}.jpg`
         });
